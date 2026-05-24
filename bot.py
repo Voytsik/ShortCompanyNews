@@ -9,6 +9,7 @@ import xml.etree.ElementTree as ET
 import requests
 from google import genai
 from telegram import Bot
+from telegram.error import RetryAfter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -34,35 +35,33 @@ if missing_vars:
     exit(1)
 
 COMPANIES = [c.strip() for c in COMPANIES_RAW.split(",") if c.strip()]
+logger.info(f"📋 Список компаній: {COMPANIES}")
+
+# ---------- Час ----------
 NOW_UTC = datetime.now(timezone.utc)
 EIGHT_HOURS_AGO = NOW_UTC - timedelta(hours=8)
 
 
-# ---------- Парсинг RSS без feedparser ----------
+# ---------- RSS парсер ----------
 def fetch_news_for_company(company: str) -> List[Dict[str, str]]:
-    """Завантажує Google News RSS через requests та XML парсер."""
     query = f"{company} stock"
     encoded_query = urllib.parse.quote_plus(query)
     url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en&gl=US&ceid=US:en"
-    logger.info(f"🔍 Завантаження RSS для {company}: {url}")
+    logger.info(f"🔍 Завантаження RSS для {company}")
 
     try:
         resp = requests.get(url, timeout=15)
         resp.raise_for_status()
         root = ET.fromstring(resp.content)
     except Exception as e:
-        logger.error(f"Помилка завантаження/парсингу {company}: {e}")
+        logger.error(f"Помилка завантаження {company}: {e}")
         return []
 
-    ns = {"": "http://www.w3.org/2005/Atom"}  # Google News використовує Atom, але fallback
-    # Насправді Google News RSS – це RSS 2.0, без неймспейсу
-    # Шукаємо елементи item
     news_items = []
     for item in root.findall(".//item"):
         title_elem = item.find("title")
         link_elem = item.find("link")
         pub_elem = item.find("pubDate")
-
         if title_elem is None or link_elem is None or pub_elem is None:
             continue
 
@@ -70,7 +69,6 @@ def fetch_news_for_company(company: str) -> List[Dict[str, str]]:
         link = link_elem.text
         pub_date_str = pub_elem.text
 
-        # Парсимо pubDate RFC 822 (наприклад, "Mon, 27 May 2025 10:00:00 GMT")
         try:
             pub_time = datetime.strptime(pub_date_str, "%a, %d %b %Y %H:%M:%S %Z").replace(tzinfo=timezone.utc)
         except Exception:
@@ -87,7 +85,7 @@ def fetch_news_for_company(company: str) -> List[Dict[str, str]]:
     return news_items
 
 
-# ---------- Генерація дайджесту через Gemini ----------
+# ---------- Gemini дайджест ----------
 def generate_digest(news_list: List[Dict[str, str]]) -> str:
     if not news_list:
         return "ℹ️ За останні 8 годин нових новин не виявлено."
@@ -116,24 +114,36 @@ def generate_digest(news_list: List[Dict[str, str]]) -> str:
 """
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
-        response = client.models.generate_content(model="gemini-2.0-flash-exp", contents=prompt)
+        # Використовуємо стабільну модель gemini-1.5-flash (або gemini-2.0-flash, якщо доступна)
+        response = client.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=prompt
+        )
         return response.text
     except Exception as e:
         logger.error(f"❌ Помилка Gemini: {e}")
-        return "⚠️ Не вдалося згенерувати дайджест."
+        return "⚠️ Не вдалося згенерувати дайджест через технічну помилку."
 
 
+# ---------- Надсилання в Telegram з обробкою flood control ----------
 async def send_to_telegram(text: str):
     bot = Bot(token=TELEGRAM_TOKEN)
     try:
         await bot.send_message(chat_id=CHAT_ID, text=text, parse_mode="Markdown")
         logger.info("📨 Повідомлення надіслано")
+    except RetryAfter as e:
+        logger.warning(f"⏳ Flood control: треба почекати {e.retry_after} секунд")
+        # Якщо потрібно, можна додати asyncio.sleep, але для cron-завдання краще просто вийти
     except Exception as e:
         logger.error(f"❌ Помилка Telegram: {e}")
     finally:
-        await bot.close()
+        try:
+            await bot.close()
+        except Exception as close_err:
+            logger.warning(f"Помилка при закритті бота: {close_err}")
 
 
+# ---------- Головна функція ----------
 def main():
     logger.info(f"🚀 Запуск моніторингу (UTC: {NOW_UTC})")
     all_news = []
@@ -145,6 +155,8 @@ def main():
         logger.info("📭 Немає свіжих новин. Завершення.")
         return
 
+    logger.info(f"📰 Всього знайдено {len(all_news)} новин. Генеруємо дайджест...")
+
     digest = generate_digest(all_news)
     header = f"📊 *Дайджест новин за останні 8 годин*\n🕒 {NOW_UTC.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
     full_message = header + digest
@@ -152,6 +164,7 @@ def main():
     if len(full_message) > 4096:
         full_message = full_message[:4093] + "..."
 
+    # Запускаємо асинхронну відправку
     asyncio.run(send_to_telegram(full_message))
     logger.info("✅ Роботу завершено")
 
