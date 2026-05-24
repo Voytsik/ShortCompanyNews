@@ -39,7 +39,6 @@ logger.info(f"📋 Список компаній: {COMPANIES}")
 
 # ---------- Парсинг RSS ----------
 def fetch_news_for_company(company: str) -> List[Dict[str, str]]:
-    """Завантажує Google News RSS через requests та XML парсер."""
     query = f"{company} stock"
     encoded_query = urllib.parse.quote_plus(query)
     url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en&gl=US&ceid=US:en"
@@ -61,8 +60,7 @@ def fetch_news_for_company(company: str) -> List[Dict[str, str]]:
         title_elem = item.find("title")
         link_elem = item.find("link")
         pub_elem = item.find("pubDate")
-
-        if title_elem is None or link_elem is None or pub_elem is None:
+        if None in (title_elem, link_elem, pub_elem):
             continue
 
         title = title_elem.text
@@ -84,107 +82,98 @@ def fetch_news_for_company(company: str) -> List[Dict[str, str]]:
     logger.info(f"✅ {company}: знайдено {len(news_items)} новин за останні 8 годин")
     return news_items
 
-# ---------- Резервний дайджест без ШІ ----------
+# ---------- Резервний дайджест (без ШІ) ----------
 def make_fallback_digest(news_list: List[Dict[str, str]]) -> str:
-    """Формує простий текстовий дайджест у випадку недоступності Gemini."""
     grouped = {}
     for item in news_list:
-        comp = item["company"]
-        if comp not in grouped:
-            grouped[comp] = []
-        grouped[comp].append(item)
+        grouped.setdefault(item["company"], []).append(item)
 
     result = "⚠️ *Дайджест згенеровано автоматично (без ШІ через ліміти API)*\n\n"
     for company, items in grouped.items():
         result += f"*{company}*:\n"
-        for i, news in enumerate(items[:5], 1):  # максимум 5 новин на компанію
-            result += f"{i}. [{news['title']}]({news['link']}) – {news['published']}\n"
+        for i, news in enumerate(items[:5], 1):  # максимум 5 найсвіжіших
+            result += f"{i}. [{news['title']}]({news['link']})\n"
         result += "\n"
     return result
 
-# ---------- Генерація дайджесту через Gemini (з автоматичним вибором моделі) ----------
+# ---------- Пошук доступної моделі Gemini ----------
 def get_available_gemini_model(client: genai.Client) -> str:
-    """Повертає першу доступну модель, яка підтримує generateContent."""
     try:
         models = client.models.list()
         for model in models:
             name = model.name
-            # Шукаємо моделі flash або pro
-            if "gemini-2.0-flash" in name or "gemini-1.5-flash" in name:
-                if "generateContent" in str(model.supported_methods):
-                    logger.info(f"Знайдено доступну модель: {name}")
-                    return name
-        # Якщо не знайшли flash, беремо будь-яку модель з generateContent
+            if "flash" in name and "generateContent" in str(model.supported_methods):
+                logger.info(f"Знайдено модель: {name}")
+                return name
         for model in models:
             if "generateContent" in str(model.supported_methods):
-                logger.info(f"Використовуємо модель: {model.name}")
+                logger.info(f"Використовуємо: {model.name}")
                 return model.name
     except Exception as e:
         logger.warning(f"Не вдалося отримати список моделей: {e}")
     return None
 
+# ---------- Генерація дайджесту (Gemini або fallback) ----------
 def generate_digest(news_list: List[Dict[str, str]]) -> str:
     if not news_list:
         return "ℹ️ За останні 8 годин нових новин не виявлено."
 
-    # Підготовка тексту новин для промпту
-    news_text = ""
-    for item in news_list:
-        news_text += (
-            f"**Компанія:** {item['company']}\n"
-            f"**Заголовок:** {item['title']}\n"
-            f"**Час:** {item['published']}\n"
-            f"**Посилання:** {item['link']}\n\n"
-        )
-
+    # Підготовка даних для ШІ
+    news_text = "\n".join(
+        f"**{item['company']}** – {item['title']} ({item['published']})\n{item['link']}"
+        for item in news_list
+    )
     prompt = f"""
-Ти – асистент інвестора. Зроби короткий, інформативний дайджест новин за останні 8 годин.
-
-Ось новини:
+Ти – асистент інвестора. Зроби короткий дайджест новин за останні 8 годин українською мовою.
+Новини:
 {news_text}
 
-Вимоги:
-- Пиши українською мовою.
-- Згрупуй новини по компаніях.
-- Для кожної компанії обери 2-3 найважливіші новини (якщо їх більше).
-- Додай посилання на джерела.
-- Стиль – діловий, лаконічний, обсяг до 500 слів.
+Вимоги: згрупуй по компаніях, обери 2-3 головні новини для кожної, додай посилання, стиль діловий, до 500 слів.
 """
     client = genai.Client(api_key=GEMINI_API_KEY)
-    
-    # Спроба знайти доступну модель
     model_name = get_available_gemini_model(client)
     if not model_name:
-        logger.warning("Не знайдено жодної моделі для generateContent, використовуємо резервний дайджест")
-        return make_fallback_digest(news_list)
-    
-    try:
-        response = client.models.generate_content(model=model_name, contents=prompt)
-        logger.info(f"✅ Gemini успішно використано модель: {model_name}")
-        return response.text
-    except Exception as e:
-        logger.error(f"Помилка при генерації через {model_name}: {e}")
-        # Спроба інших моделей (захардкоджені як запасний варіант)
-        fallback_models = ["gemini-1.5-flash", "gemini-2.0-flash-lite"]
-        for fb in fallback_models:
-            try:
-                response = client.models.generate_content(model=fb, contents=prompt)
-                logger.info(f"✅ Fallback модель {fb} спрацювала")
-                return response.text
-            except Exception as fb_err:
-                logger.warning(f"Fallback {fb} не вдався: {fb_err}")
-        # Якщо нічого не допомогло – резервний дайджест
-        logger.error("Всі спроби Gemini невдалі, використовуємо резервний дайджест")
+        logger.warning("Немає доступної моделі Gemini → резервний дайджест")
         return make_fallback_digest(news_list)
 
-# ---------- Надсилання в Telegram ----------
+    try:
+        response = client.models.generate_content(model=model_name, contents=prompt)
+        logger.info(f"✅ Gemini ({model_name}) спрацював")
+        return response.text
+    except Exception as e:
+        logger.error(f"Помилка Gemini: {e} → резервний дайджест")
+        return make_fallback_digest(news_list)
+
+# ---------- Надсилання довгих повідомлень частинами ----------
+async def send_long_message(bot: Bot, chat_id: str, text: str, parse_mode: str = "Markdown"):
+    MAX_LEN = 4096
+    if len(text) <= MAX_LEN:
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode)
+        return
+
+    # Розбиваємо по рядках, намагаючись не розірвати Markdown-посилання
+    parts = []
+    while len(text) > MAX_LEN:
+        split_at = text.rfind('\n', 0, MAX_LEN)
+        if split_at == -1:
+            split_at = MAX_LEN
+        parts.append(text[:split_at])
+        text = text[split_at:]
+    if text:
+        parts.append(text)
+
+    for i, part in enumerate(parts):
+        header = f"📄 Частина {i+1}/{len(parts)}\n\n" if len(parts) > 1 else ""
+        await bot.send_message(chat_id=chat_id, text=header + part, parse_mode=parse_mode)
+        await asyncio.sleep(1)  # пауза, щоб уникнути флуду
+
 async def send_to_telegram(text: str):
     bot = Bot(token=TELEGRAM_TOKEN)
     try:
-        await bot.send_message(chat_id=CHAT_ID, text=text, parse_mode="Markdown")
+        await send_long_message(bot, CHAT_ID, text, parse_mode="Markdown")
         logger.info("📨 Повідомлення надіслано")
     except Exception as e:
-        logger.error(f"❌ Помилка Telegram при надсиланні: {e}")
+        logger.error(f"❌ Помилка при надсиланні: {e}")
     finally:
         try:
             await bot.close()
@@ -197,6 +186,7 @@ async def send_to_telegram(text: str):
 def main():
     now_utc = datetime.now(timezone.utc)
     logger.info(f"🚀 Запуск моніторингу (UTC: {now_utc})")
+
     all_news = []
     for company in COMPANIES:
         news = fetch_news_for_company(company)
@@ -210,9 +200,6 @@ def main():
     digest = generate_digest(all_news)
     header = f"📊 *Дайджест новин за останні 8 годин*\n🕒 {now_utc.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
     full_message = header + digest
-
-    if len(full_message) > 4096:
-        full_message = full_message[:4093] + "..."
 
     asyncio.run(send_to_telegram(full_message))
     logger.info("✅ Роботу завершено")
