@@ -1,0 +1,15 @@
+name: Trigger News Bot
+
+on:
+  schedule:
+    # Кожні 8 годин (0, 8, 16 UTC)
+    - cron: '0 0,8,16 * * *'
+  workflow_dispatch:  # можна запустити вручну
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call Render webhook
+        run: |
+          curl -X GET "https://shortcompanynews.onrender.com/trigger_news?secret=${{ secrets.TRIGGER_SECRET }}"
