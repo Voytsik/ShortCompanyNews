@@ -4,9 +4,9 @@ import asyncio
 import urllib.parse
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict
-import xml.etree.ElementTree as ET
 
 import requests
+import xml.etree.ElementTree as ET
 from google import genai
 from telegram import Bot
 from telegram.error import RetryAfter
@@ -37,13 +37,9 @@ if missing_vars:
 COMPANIES = [c.strip() for c in COMPANIES_RAW.split(",") if c.strip()]
 logger.info(f"📋 Список компаній: {COMPANIES}")
 
-# ---------- Час ----------
-NOW_UTC = datetime.now(timezone.utc)
-EIGHT_HOURS_AGO = NOW_UTC - timedelta(hours=8)
-
-
-# ---------- RSS парсер ----------
+# ---------- Парсинг RSS ----------
 def fetch_news_for_company(company: str) -> List[Dict[str, str]]:
+    """Завантажує Google News RSS через requests та XML парсер."""
     query = f"{company} stock"
     encoded_query = urllib.parse.quote_plus(query)
     url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en&gl=US&ceid=US:en"
@@ -54,14 +50,18 @@ def fetch_news_for_company(company: str) -> List[Dict[str, str]]:
         resp.raise_for_status()
         root = ET.fromstring(resp.content)
     except Exception as e:
-        logger.error(f"Помилка завантаження {company}: {e}")
+        logger.error(f"Помилка завантаження/парсингу {company}: {e}")
         return []
 
     news_items = []
+    now_utc = datetime.now(timezone.utc)
+    eight_hours_ago = now_utc - timedelta(hours=8)
+
     for item in root.findall(".//item"):
         title_elem = item.find("title")
         link_elem = item.find("link")
         pub_elem = item.find("pubDate")
+
         if title_elem is None or link_elem is None or pub_elem is None:
             continue
 
@@ -74,7 +74,7 @@ def fetch_news_for_company(company: str) -> List[Dict[str, str]]:
         except Exception:
             continue
 
-        if pub_time >= EIGHT_HOURS_AGO:
+        if pub_time >= eight_hours_ago:
             news_items.append({
                 "title": title,
                 "link": link,
@@ -84,8 +84,7 @@ def fetch_news_for_company(company: str) -> List[Dict[str, str]]:
     logger.info(f"✅ {company}: знайдено {len(news_items)} новин за останні 8 годин")
     return news_items
 
-
-# ---------- Gemini дайджест ----------
+# ---------- Генерація дайджесту через Gemini (з fallback моделями) ----------
 def generate_digest(news_list: List[Dict[str, str]]) -> str:
     if not news_list:
         return "ℹ️ За останні 8 годин нових новин не виявлено."
@@ -112,40 +111,48 @@ def generate_digest(news_list: List[Dict[str, str]]) -> str:
 - Додай посилання на джерела.
 - Стиль – діловий, лаконічний, обсяг до 500 слів.
 """
-    try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        # Використовуємо стабільну модель gemini-1.5-flash (або gemini-2.0-flash, якщо доступна)
-        response = client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=prompt
-        )
-        return response.text
-    except Exception as e:
-        logger.error(f"❌ Помилка Gemini: {e}")
-        return "⚠️ Не вдалося згенерувати дайджест через технічну помилку."
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    # Список моделей у порядку пріоритету (перша робоча буде використана)
+    models_to_try = [
+        "gemini-2.0-flash-lite",
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-002",
+        "gemini-2.0-flash-exp"
+    ]
+    last_error = None
+    for model_name in models_to_try:
+        try:
+            response = client.models.generate_content(model=model_name, contents=prompt)
+            logger.info(f"✅ Gemini використано модель: {model_name}")
+            return response.text
+        except Exception as e:
+            logger.warning(f"Модель {model_name} не вдалася: {e}")
+            last_error = e
+            continue
+    logger.error(f"❌ Помилка Gemini: жодна модель не спрацювала. Остання помилка: {last_error}")
+    return "⚠️ Не вдалося згенерувати дайджест через технічну помилку."
 
-
-# ---------- Надсилання в Telegram з обробкою flood control ----------
+# ---------- Надсилання в Telegram ----------
 async def send_to_telegram(text: str):
     bot = Bot(token=TELEGRAM_TOKEN)
     try:
         await bot.send_message(chat_id=CHAT_ID, text=text, parse_mode="Markdown")
         logger.info("📨 Повідомлення надіслано")
-    except RetryAfter as e:
-        logger.warning(f"⏳ Flood control: треба почекати {e.retry_after} секунд")
-        # Якщо потрібно, можна додати asyncio.sleep, але для cron-завдання краще просто вийти
     except Exception as e:
-        logger.error(f"❌ Помилка Telegram: {e}")
+        logger.error(f"❌ Помилка Telegram при надсиланні: {e}")
     finally:
+        # Закриваємо бота, але ігноруємо flood control
         try:
             await bot.close()
-        except Exception as close_err:
-            logger.warning(f"Помилка при закритті бота: {close_err}")
-
+        except RetryAfter as e:
+            logger.warning(f"Flood control при закритті, ігноруємо: {e}")
+        except Exception as e:
+            logger.warning(f"Помилка при закритті бота: {e}")
 
 # ---------- Головна функція ----------
 def main():
-    logger.info(f"🚀 Запуск моніторингу (UTC: {NOW_UTC})")
+    now_utc = datetime.now(timezone.utc)
+    logger.info(f"🚀 Запуск моніторингу (UTC: {now_utc})")
     all_news = []
     for company in COMPANIES:
         news = fetch_news_for_company(company)
@@ -156,18 +163,15 @@ def main():
         return
 
     logger.info(f"📰 Всього знайдено {len(all_news)} новин. Генеруємо дайджест...")
-
     digest = generate_digest(all_news)
-    header = f"📊 *Дайджест новин за останні 8 годин*\n🕒 {NOW_UTC.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
+    header = f"📊 *Дайджест новин за останні 8 годин*\n🕒 {now_utc.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
     full_message = header + digest
 
     if len(full_message) > 4096:
         full_message = full_message[:4093] + "..."
 
-    # Запускаємо асинхронну відправку
     asyncio.run(send_to_telegram(full_message))
     logger.info("✅ Роботу завершено")
-
 
 if __name__ == "__main__":
     main()
