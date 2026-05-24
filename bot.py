@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 # ---------- Змінні середовища ----------
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.environ.get("@t1246fdf")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 COMPANIES_RAW = os.environ.get("COMPANIES", "")
 
