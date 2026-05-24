@@ -19,8 +19,18 @@ CHAT_ID = os.environ.get("@t1246fdf")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 COMPANIES_RAW = os.environ.get("COMPANIES", "")
 
-if not all([TELEGRAM_TOKEN, CHAT_ID, GEMINI_API_KEY, COMPANIES_RAW]):
-    logger.error("❌ Не вистачає змінних середовища")
+missing_vars = []
+if not TELEGRAM_TOKEN:
+    missing_vars.append("TELEGRAM_BOT_TOKEN")
+if not CHAT_ID:
+    missing_vars.append("TELEGRAM_CHAT_ID")
+if not GEMINI_API_KEY:
+    missing_vars.append("GEMINI_API_KEY")
+if not COMPANIES_RAW:
+    missing_vars.append("COMPANIES")
+
+if missing_vars:
+    logger.error(f"❌ Не вистачає змінних середовища: {', '.join(missing_vars)}")
     exit(1)
 
 COMPANIES = [c.strip() for c in COMPANIES_RAW.split(",") if c.strip()]
