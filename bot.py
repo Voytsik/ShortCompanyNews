@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("@t1246fdf")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-COMPANIES_RAW = os.environ.get("Apple", "Tesla")   # наприклад "Apple,Microsoft,Tesla"
+COMPANIES_RAW = os.environ.get("COMPANIES", "")
 
 if not all([TELEGRAM_TOKEN, CHAT_ID, GEMINI_API_KEY, COMPANIES_RAW]):
     logger.error("❌ Не вистачає змінних середовища")
