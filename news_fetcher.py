@@ -1,69 +1,31 @@
-# news_fetcher.py
 import logging
 import base64
 import re
+from datetime import datetime
 from typing import List, Dict
 from google_news_api import GoogleNewsClient
-
-try:
-    from googlenewsdecoder import gnewsdecoder
-    DECODER_AVAILABLE = True
-except ImportError:
-    DECODER_AVAILABLE = False
-    logging.warning("Бібліотека 'googlenewsdecoder' не знайдена. Посилання не будуть декодуватися.")
+from googlenewsdecoder import new_decoderv1
 
 logger = logging.getLogger(__name__)
 
 def decode_google_news_url(google_url: str) -> str:
     """
     Декодує довге посилання Google News у пряме посилання на оригінальну статтю.
-    Використовує бібліотеку googlenewsdecoder або власний fallback-метод.
+    Використовує стабільний метод new_decoderv1 з бібліотеки googlenewsdecoder.
     """
     if not google_url or 'news.google.com' not in google_url:
         return google_url
 
-    # Fallback-метод на випадок, якщо бібліотека недоступна або не спрацювала
-    # (на основі реалізації з newspaper4k, Issue #645)
-    def try_fallback_decode(url: str) -> str:
-        try:
-            import base64
-            import re
-            _ENCODED_URL_PREFIX = "https://news.google.com/rss/articles/"
-            _ENCODED_URL_PREFIX_WITH_CONSENT = "https://consent.google.com/m?continue=https://news.google.com/rss/articles/"
-            _ENCODED_URL_RE = re.compile(rf"^(?:{re.escape(_ENCODED_URL_PREFIX_WITH_CONSENT)}|{re.escape(_ENCODED_URL_PREFIX)})(?P<encoded_url>[^?]+)")
-            _DECODED_URL_RE = re.compile(rb'^\x08\x13".+?(?P<primary_url>http[^\xd2]+)\xd2\x01')
-            match = _ENCODED_URL_RE.match(url)
-            if not match:
-                return url
-            encoded_text = match.groupdict()["encoded_url"]
-            encoded_text += "==="  # Фіксуємо неправильне padding
-            decoded_text = base64.urlsafe_b64decode(encoded_text)
-            match = _DECODED_URL_RE.match(decoded_text)
-            if match:
-                primary_url = match.groupdict()["primary_url"]
-                return primary_url.decode()
-            else:
-                # Якщо не вдалося за match, пробуємо знайти посилання в декодованому тексті
-                decoded_str = decoded_text.decode('utf-8', errors='ignore')
-                url_match = re.search(r'https?://[^\s]+', decoded_str)
-                if url_match:
-                    return url_match.group(0)
-            return url
-        except Exception as e:
-            logger.debug(f"Fallback decoding failed: {e}")
-            return url
-
-    # Спроба декодувати за допомогою бібліотеки
-    if DECODER_AVAILABLE:
-        try:
-            decoded_result = gnewsdecoder(google_url)
-            if decoded_result and decoded_result.get("status"):
-                return decoded_result["decoded_url"]
-        except Exception as e:
-            logger.warning(f"Decoder library error: {e}")
-
-    # Якщо бібліотека не впоралася, використовуємо fallback-метод
-    return try_fallback_decode(google_url)
+    try:
+        decoded_result = new_decoderv1(google_url)
+        if decoded_result and decoded_result.get("status"):
+            return decoded_result["decoded_url"]
+        else:
+            logger.warning(f"Не вдалося розкодувати URL: {google_url}")
+            return google_url
+    except Exception as e:
+        logger.error(f"Помилка при декодуванні URL {google_url}: {e}")
+        return google_url
 
 def fetch_news_for_company(company: str) -> List[Dict[str, str]]:
     """Отримує новини для заданої компанії. Спочатку шукає українські, потім англійські."""
