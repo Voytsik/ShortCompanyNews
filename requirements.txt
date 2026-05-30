@@ -7,3 +7,4 @@ APScheduler==3.11.0
 GoogleNews==1.6.12
 google-news-api
 googlenewsdecoder
+git+https://github.com/SSujitX/google-news-url-decoder.git
