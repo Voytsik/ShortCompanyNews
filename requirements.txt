@@ -5,3 +5,4 @@ fastapi==0.115.12
 uvicorn==0.34.0
 apscheduler==3.11.0
 google-news-api==0.0.8
+git+https://github.com/SSujitX/google-news-url-decoder@main
