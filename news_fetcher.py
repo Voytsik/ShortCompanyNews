@@ -1,3 +1,4 @@
+# news_fetcher.py
 import logging
 import base64
 import re
@@ -7,50 +8,46 @@ from google_news_api import GoogleNewsClient
 logger = logging.getLogger(__name__)
 
 def decode_google_news_url(google_url: str) -> str:
-    """
-    Декодує довге посилання Google News у пряме посилання на оригінальну статтю.
-    Формат: https://news.google.com/rss/articles/CBM...?oc=5
-    """
+    """Декодує довге посилання Google News у пряме посилання на оригінальну статтю."""
     if not google_url or 'news.google.com' not in google_url:
         return google_url
     
     try:
-        # Витягуємо закодовану частину після "/articles/" до першого '?' або ')'
-        match = re.search(r'/articles/([^?)]+)', google_url)
+        # 1. Витягуємо закодовану частину (після /articles/ або /read/)
+        match = re.search(r'/(?:articles|read)/([^?)]+)', google_url)
         if not match:
+            logger.debug(f"Can't find encoded part in URL: {google_url}")
             return google_url
         
         encoded = match.group(1)
-        # Додаємо необхідне padding для base64
+        
+        # 2. Додаємо необхідний padding для base64
+        # Оригінальний base64url decoded part may be padded with '=' at the end
         padding = 4 - (len(encoded) % 4)
         if padding != 4:
             encoded += '=' * padding
         
-        # Замінюємо символи base64url на стандартні base64
+        # 3. Замінюємо символи base64url на стандартні base64
         encoded = encoded.replace('-', '+').replace('_', '/')
         
-        # Декодуємо
+        # 4. Декодуємо
         decoded_bytes = base64.b64decode(encoded)
         decoded_str = decoded_bytes.decode('utf-8', errors='ignore')
         
-        # Шукаємо підрядок, що починається з 'http'
-        # Зазвичай оригінальне посилання починається після перших 4 байтів (не завжди)
-        # Тому знаходимо перше входження 'http://' або 'https://'
+        # 5. Шукаємо підрядок, що починається з 'http'
         url_match = re.search(r'https?://[^\s]+', decoded_str)
         if url_match:
             return url_match.group(0)
         
-        # Якщо не знайшли, повертаємо оригінал
+        logger.warning(f"Could not find URL in decoded string: {decoded_str[:100]}")
         return google_url
+        
     except Exception as e:
-        logger.warning(f"Помилка декодування URL {google_url}: {e}")
+        logger.warning(f"Error decoding URL {google_url}: {e}")
         return google_url
 
 def fetch_news_for_company(company: str) -> List[Dict[str, str]]:
-    """
-    Отримує новини для заданої компанії.
-    Спочатку шукає новини українською, потім англійською.
-    """
+    """Отримує новини для заданої компанії. Спочатку шукає українські, потім англійські."""
     all_news = []
     
     # Спочатку пробуємо знайти українські новини
@@ -85,14 +82,19 @@ def _fetch_news_by_language(company: str, lang_code: str) -> List[Dict[str, str]
         search_results = client.search(f"{company} stock", when="8h")
         
         for result in search_results:
+            # Отримуємо URL та декодуємо його
             original_url = result.get('link', '')
-            # Декодуємо посилання, якщо воно від Google News
             decoded_url = decode_google_news_url(original_url)
+            
+            # Перевіряємо чи published не є None, якщо так — використовуємо поточний час
+            published = result.get('published')
+            if published is None:
+                published = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
             
             news_list.append({
                 "title": result.get('title', 'Без назви'),
-                "link": decoded_url,
-                "published": result.get('published', ''),
+                "link": decoded_url,  # Тут вже пряме посилання
+                "published": published,
                 "company": company,
                 "language": lang_code
             })
