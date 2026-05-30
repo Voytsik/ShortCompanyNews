@@ -11,11 +11,11 @@ from publisher import publish_news
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Ініціалізація Telegram Application
     telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
     telegram_app.add_handler(CommandHandler("start", start))
     telegram_app.add_handler(CommandHandler("test", test_now))
     await telegram_app.initialize()
+    await telegram_app.start()          # <-- виправлення
     await telegram_app.bot.set_webhook(WEBHOOK_URL, allowed_updates=Update.ALL_TYPES)
     logger.info(f"✅ Webhook встановлено на {WEBHOOK_URL}")
     app.state.telegram_app = telegram_app
@@ -38,7 +38,6 @@ async def health():
 
 @fastapi_app.get("/trigger_news")
 async def trigger_news(secret: str):
-    """Ендпоінт для виклику публікації новин (з GitHub Actions)."""
     if secret != TRIGGER_SECRET:
         raise HTTPException(status_code=403, detail="Invalid secret")
     asyncio.create_task(publish_news())
