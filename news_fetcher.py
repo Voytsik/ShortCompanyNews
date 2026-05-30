@@ -1,6 +1,7 @@
 import logging
 from typing import List, Dict
 from google_news_api import GoogleNewsClient
+from googlenewsdecoder import new_decoderv1  # Декодер для посилань Google News
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +44,26 @@ def _fetch_news_by_language(company: str, lang_code: str) -> List[Dict[str, str]
         search_results = client.search(f"{company} stock", when="8h")
         
         for result in search_results:
+            original_url = result.get('link', '')
+            decoded_url = original_url
+            
+            # Декодуємо тільки посилання, що містять news.google.com
+            if original_url and 'news.google.com' in original_url:
+                try:
+                    decoded_result = new_decoderv1(original_url)
+                    if decoded_result and decoded_result.get('decoded_url'):
+                        decoded_url = decoded_result['decoded_url']
+                        logger.debug(f"Декодовано посилання для {company}: {decoded_url}")
+                    else:
+                        logger.warning(f"Не вдалося декодувати URL: {original_url}")
+                except Exception as e:
+                    logger.error(f"Помилка декодування URL для {company}: {e}")
+            else:
+                decoded_url = original_url
+            
             news_list.append({
                 "title": result.get('title', 'Без назви'),
-                "link": result.get('link', ''),
+                "link": decoded_url,  # Тут вже пряме посилання
                 "published": result.get('published', ''),
                 "company": company,
                 "language": lang_code
