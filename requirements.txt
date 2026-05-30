@@ -3,8 +3,5 @@ google-genai==0.3.0
 python-telegram-bot==21.5
 fastapi==0.115.12
 uvicorn==0.34.0
-APScheduler==3.11.0
-GoogleNews==1.6.12
-google-news-api
-googlenewsdecoder
-git+https://github.com/SSujitX/google-news-url-decoder.git
+apscheduler==3.11.0
+google-news-api==0.1.2
